@@ -8,7 +8,7 @@ TWEAK_NAME := chromaunlock
 
 chromaunlock_FILES := Sources/Unlock.x
 chromaunlock_CFLAGS := -fobjc-arc
-chromaunlock_FRAMEWORKS := Foundation
+chromaunlock_FRAMEWORKS := Foundation UIKit
 # Pure runtime swizzling in a constructor, so no Substrate dependency is linked into the IPA.
 chromaunlock_LOGOS_DEFAULT_GENERATOR := internal
 

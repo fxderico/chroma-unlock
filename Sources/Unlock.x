@@ -1,48 +1,94 @@
-// Chroma Plus unlock — a tiny companion dylib, injected into the Spotify.app alongside Chroma's own
-// spotifyglass.dylib. Chroma gates its paid features on a read-only BOOL getter `plusLocked` (true
-// when a feature is locked) and a `subscribed` / `plus` BOOL (true when the Patreon membership is
-// verified). At launch we swizzle the getters on the one class that owns them: nothing is locked,
-// everything reads as subscribed. No Patreon e-mail, no 15-minute code, no server call.
+// Chroma Plus unlock — companion dylib, injected next to Chroma's spotifyglass.dylib.
 //
-// It targets only the class that declares `plusLocked` AND `subscribed`/`plus`, so Spotify's own
-// unrelated `subscribed`/`plus` selectors (collection state, UI symbols) are left alone. Pure runtime
-// swizzling, so the dylib depends on nothing inside the IPA.
-#import <Foundation/Foundation.h>
+// Chroma gates paid features on a read-only BOOL getter `plusLocked` (true when a feature is locked,
+// computed from a `plusFeature` name and a global `subscribed` state). We turn the locks off at the
+// getters:
+//   - plusLocked  -> NO   on every class that declares it (Chroma-only selector, safe to force)
+//   - plusFeature -> nil  so no row is considered a Plus feature
+//   - subscribed  -> YES  only on a class that also carries a Chroma Plus selector, so Spotify's own
+//                         subscription state is left alone
+//
+// Two things the first version got wrong and this one fixes:
+//   1. `plusLocked` and `subscribed` live on DIFFERENT classes, so requiring both on one class
+//      skipped the real gate. Each selector is now handled on whatever class declares it.
+//   2. Load order: if this dylib's constructor runs before Chroma's classes register, nothing
+//      matches. So the sweep runs at load AND again a few seconds in (method_setImplementation is
+//      idempotent).
+//
+// No console on the device, so a one-time banner reports what it hooked: tell me the two numbers.
+#import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-static BOOL returnNO(id self, SEL _cmd)  { return NO; }   // nothing is locked
-static BOOL returnYES(id self, SEL _cmd) { return YES; }  // you have Plus
-static id   returnNil(id self, SEL _cmd) { return nil; }  // no row is a Plus feature
+static BOOL returnNO(id s, SEL c)  { return NO; }
+static BOOL returnYES(id s, SEL c) { return YES; }
+static id   returnNil(id s, SEL c) { return nil; }
 
-static void forceGetter(Class cls, SEL sel, IMP imp) {
+static int gLocked = 0, gSubscribed = 0;
+
+static BOOL has(Class cls, SEL sel) { return class_getInstanceMethod(cls, sel) != NULL; }
+static void force(Class cls, SEL sel, IMP imp) {
     Method m = class_getInstanceMethod(cls, sel);
     if (m) method_setImplementation(m, imp);
 }
 
-__attribute__((constructor))
-static void chromaUnlock(void) {
-    SEL locked = @selector(plusLocked);
-    SEL subscribed = @selector(subscribed);
-    SEL plus = @selector(plus);
-    SEL plusFeature = @selector(plusFeature);
+static void applyUnlock(void) {
+    SEL locked = @selector(plusLocked), feature = @selector(plusFeature), subscribed = @selector(subscribed);
+    SEL offered = @selector(offeredPlus), userPlus = @selector(userPlus), plusChanged = @selector(plusChanged);
 
     unsigned int count = 0;
     Class *classes = objc_copyClassList(&count);
-    int hit = 0;
+    gLocked = gSubscribed = 0;
     for (unsigned int i = 0; i < count; i++) {
         Class cls = classes[i];
-        // The Plus-owning class: it has the lock getter and the subscription state. Anything with
-        // only one of these is some other class that happens to share a name, and is left untouched.
-        if (!class_getInstanceMethod(cls, locked)) continue;
-        if (!class_getInstanceMethod(cls, subscribed) && !class_getInstanceMethod(cls, plus)) continue;
+        BOOL chroma = has(cls, locked) || has(cls, feature) || has(cls, offered) ||
+                      has(cls, userPlus) || has(cls, plusChanged);
 
-        forceGetter(cls, locked, (IMP)returnNO);
-        forceGetter(cls, subscribed, (IMP)returnYES);
-        forceGetter(cls, plus, (IMP)returnYES);
-        forceGetter(cls, plusFeature, (IMP)returnNil);
-        NSLog(@"[chroma-unlock] unlocked Plus on %s", class_getName(cls));
-        hit++;
+        if (has(cls, locked))  { force(cls, locked, (IMP)returnNO); gLocked++; }
+        if (has(cls, feature)) { force(cls, feature, (IMP)returnNil); }
+        if (chroma && has(cls, subscribed)) { force(cls, subscribed, (IMP)returnYES); gSubscribed++; }
+
+        if (has(cls, locked) || has(cls, feature))
+            NSLog(@"[chroma-unlock] gate class: %s", class_getName(cls));
     }
     free(classes);
-    if (!hit) NSLog(@"[chroma-unlock] no Plus class found (build changed its gate?)");
+    NSLog(@"[chroma-unlock] hooked plusLocked on %d class(es), subscribed on %d", gLocked, gSubscribed);
+}
+
+// One banner, first launch only, so there's a visible signal without a console.
+static void showBanner(void) {
+    static BOOL shown = NO;
+    if (shown) return;
+    shown = YES;
+
+    UIWindow *win = nil;
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
+        for (UIWindow *w in ((UIWindowScene *)scene).windows) if (w.isKeyWindow) { win = w; break; }
+        if (win) break;
+    }
+    UIViewController *root = win.rootViewController;
+    while (root.presentedViewController) root = root.presentedViewController;
+    if (!root) return;
+
+    NSString *msg = [NSString stringWithFormat:
+        @"plusLocked hooked on %d class(es)\nsubscribed forced on %d\n\n%@",
+        gLocked, gSubscribed,
+        gLocked ? @"Gate found — features should be open." : @"Gate NOT found — the build renamed it."];
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"chroma-unlock"
+                                                              message:msg
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleCancel handler:nil]];
+    [root presentViewController:a animated:YES completion:nil];
+}
+
+static void sweep(BOOL banner) {
+    applyUnlock();
+    if (banner) showBanner();
+}
+
+__attribute__((constructor))
+static void chromaUnlock(void) {
+    sweep(NO);   // immediately (may be before Chroma's classes register)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ sweep(NO); });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ sweep(YES); });
 }
