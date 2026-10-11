@@ -28,17 +28,19 @@ jobs:
       - name: Build
         run: env -u MAKELEVEL gmake clean package
 
-      - name: Collect the dylib
+      - name: Collect the dylib and the .deb
         run: |
           mkdir -p out
-          found="$(find .theos/obj -name 'chromaunlock.dylib' | head -1)"
-          [ -n "$found" ] || found="$(find . -name 'chromaunlock.dylib' | head -1)"
-          [ -n "$found" ] || { echo "::error::chromaunlock.dylib not found"; exit 1; }
-          cp "$found" out/chromaunlock.dylib
+          dy="$(find .theos/obj -name 'chromaunlock.dylib' | head -1)"
+          [ -n "$dy" ] || dy="$(find . -name 'chromaunlock.dylib' | head -1)"
+          [ -n "$dy" ] || { echo "::error::chromaunlock.dylib not found"; exit 1; }
+          cp "$dy" out/chromaunlock.dylib
+          deb="$(find packages -name '*.deb' | head -1)"
+          [ -n "$deb" ] && cp "$deb" out/chroma-unlock.deb || echo "::warning::no .deb produced"
           ls -la out
 
       - uses: actions/upload-artifact@v5
         with:
           name: chroma-unlock
-          path: out/chromaunlock.dylib
+          path: out/*
           if-no-files-found: error
