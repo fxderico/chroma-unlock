@@ -1,0 +1,44 @@
+name: Build chroma-unlock dylib
+
+on:
+  workflow_dispatch:
+
+env:
+  THEOS: ${{ github.workspace }}/theos
+
+jobs:
+  dylib:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: actions/checkout@v5
+        with:
+          repository: theos/theos
+          path: theos
+          submodules: recursive
+
+      - name: Install tools
+        run: brew install make dpkg ldid
+
+      - name: Build
+        run: env -u MAKELEVEL gmake clean package
+
+      - name: Collect the dylib
+        run: |
+          mkdir -p out
+          found="$(find .theos/obj -name 'chromaunlock.dylib' | head -1)"
+          [ -n "$found" ] || found="$(find . -name 'chromaunlock.dylib' | head -1)"
+          [ -n "$found" ] || { echo "::error::chromaunlock.dylib not found"; exit 1; }
+          cp "$found" out/chromaunlock.dylib
+          ls -la out
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: chroma-unlock
+          path: out/chromaunlock.dylib
+          if-no-files-found: error

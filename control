@@ -1,0 +1,8 @@
+Package: com.chromaunlock
+Name: chroma-unlock
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Description: Unlocks Chroma Plus features at runtime (companion dylib)
+Maintainer: fxderico
+Author: fxderico
+Section: Tweaks
